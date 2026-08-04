@@ -20,7 +20,7 @@ st.set_page_config(layout="wide")
 # to give title 
 st.title("AI RESUME GENERATOR")
 st.write("""THIS APP HELP TO CUSTOMISED PROFFESSIONAL RESUME
-WITH LATEST JPB APPL LINKS""")
+WITH LATEST JOB APPL LINKS""")
 
 st.image("bg.png")
 
