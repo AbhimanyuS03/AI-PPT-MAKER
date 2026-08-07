@@ -1,172 +1,116 @@
-from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_groq import ChatGroq
-import langchain
-from langchain.agents import create_agent
-from tavily import TavilyClient
-import pytesseract as pyt
-import streamlit as st
+# =============STEP 1: LOAD MODULES===============
 import os
 import time
+import numpy
 from PIL import Image
-import pandas as pd
-import numpy as np
-import warnings
-warnings.filterwarnings("ignore")
-print("MODULE LOADED SUCCESSFULLY : THANK YOU ")
+from dotenv import load_dotenv
+import streamlit as st
 
-# to show web app : complete page layout
-st.set_page_config(layout="wide")
+from langchain_community.document_loaders import PyPDFLoader
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_community.vectorstores import FAISS
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.runnables import RunnablePassthrough
 
-# to give title 
-st.title("AI RESUME GENERATOR")
-st.write("""THIS APP HELP TO CUSTOMISED PROFFESSIONAL RESUME
-WITH LATEST JOB APPL LINKS""")
+# ====================STEP 2 API KEYS======================
+st.set_page_config(page_title="Flash Card Generator for notes", layout="wide")
 
-st.image("bg.png")
+st.sidebar.title("SET API CONFIG")
+st.title("Flash Card Generator for notes 📚")
 
-st.sidebar.title("fill important detailed which we required")
-st.sidebar.image("bg.png")
-
-
-# Step 3
-Groq_AI_APIs_Keys = st.sidebar.text_input("Groq-API",type="password")
-tavily_api_key =  st.sidebar.text_input("Tavily-API",type="password")
-GOOGLE_API_KEYS = st.sidebar.text_input("Google-API",type="password")
-
-all_API = [tavily_api_key, Groq_AI_APIs_Keys,
-           GOOGLE_API_KEYS]
-if not all(all_API):
-    st.error("Must give API KEYS")
-    st.stop()
-elif all(all_API):
-    st.success("API KEYS LOADED SUCCESSFULLY")
+GOOGLE_API_KEY = st.sidebar.text_input("GOOGLE_API_KEY", type="password")
+if GOOGLE_API_KEY:
+    os.environ["GOOGLE_API_KEY"] = GOOGLE_API_KEY
+    st.sidebar.success("API key Loaded!!")
 else:
-    st.info("passes ALL the API keys Succesfully")
+    st.sidebar.info("Give API key")
 
-# Multiselect option
-options=["Delhi","Mumbai",
-         "pune","banglore",
-         "gurugram"]
-locations = st.sidebar.multiselect("Select Locations",
-                                   options = options)
+# =======================STEP 3: LOAD PDF========================
+uploaded_file = st.sidebar.file_uploader("Upload PDF File", type=["pdf"])
 
-profile_op = ["Data Analysts","AI Engineer",
-              "Gen AI developer", "Full-stack dev",
-              "Data Scientist"]
+if uploaded_file is not None and GOOGLE_API_KEY:
+    save_dir = "pdf_files"
+    if not os.path.exists(save_dir):
+        os.makedirs(save_dir)
 
-profile = st.sidebar.multiselect("select Job Profile",
-                                options = options)
+    file_path = os.path.join(save_dir, uploaded_file.name)
+    with open(file_path, "wb") as f:
+        f.write(uploaded_file.getbuffer())
+    
+    st.sidebar.success(f"File uploaded: {uploaded_file.name}")
 
-# ===============GET USER INFO================== #
-st.markdown("""### GET USER INFO ###""")
-user_info = st.text_area(""" write you resume Decsriptions : """) 
+    # =====================STEP 4: LOAD RESOURCES======================
+    @st.cache_data
+    def load_documents(path):
+        loader = PyPDFLoader(path)
+        return loader.load()
 
-# project flow
-# model
-# tool
-# app.py
+    @st.cache_resource
+    def load_embedding():
+        return HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
 
-model = ChatGoogleGenerativeAI(
-    model = "gemini-3.5-flash-lite",
-    google_api_key = GOOGLE_API_KEYS
-)
-# response=model.invoke("hello buddy")
-# print(response.content)
+    @st.cache_data
+    def get_splitted_chunks(_documents):
+        splitter = RecursiveCharacterTextSplitter(
+            chunk_size=1000,
+            chunk_overlap=200
+        )
+        return splitter.split_documents(_documents)
 
-def search_latest_news_jobs(query):
-  """This Function Helps to Featch Latest news
-  or jobs related article using tavily"""
+    @st.cache_data
+    def create_vector_db(_chunks, _embeddings):
+        vectorstore = FAISS.from_documents(_chunks, _embeddings)
+        vectorstore.save_local("faiss_index")
+        return vectorstore
 
-  client = TavilyClient(
-      api_key = tavily_api_key
-  )
-  response =  client.search(query)
-  return response
+    @st.cache_data
+    def create_retriever(_vectorstore, k_value):
+        return _vectorstore.as_retriever(search_kwargs={"k": k_value})
 
-# agent_creation
-agent =  create_agent(
-    model= model,
-    tools = [search_latest_news_jobs]
-)
-# agent
+    # =====================STEP 5: GET AND LOAD DOCS====================
+    with st.spinner("Processing PDF and building Vector Store..."):
+        documents = load_documents(file_path)
+        embeddings = load_embedding()
+        chunks = get_splitted_chunks(documents)
+        vectorstore = create_vector_db(chunks, embeddings)
 
-def main_agent(agent,query):
-  """this is main agent, or leader agents
-  orchestrate sub agents """
-  # giving prompt to create detaoled prompt
-  # for code genrations
+    k_slider = st.sidebar.slider("Select Top K-Value", min_value=1, max_value=10, value=4)
+    retriever = create_retriever(vectorstore, k_slider)
 
-  prompt = """you are AI assistant and below
-  given is a prompt, your
-  task is give detailed prompt for tasks
-  this
-  you are a professional resume generator where
-  user give there personal info
-  you have t6o create detailed resume
-  for studnets or proffesstional one
-  , it must be in dynamic UI  and
-  UX and with advanced css professional
-  designning output in html
-  formatting no  markdown allowed
-  """
+    # ========================STEP 6: LCEL RAG CHAIN=======================
+    llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", google_api_key=GOOGLE_API_KEY)
+    
+    prompt = ChatPromptTemplate.from_template("""
+Answer the question using ONLY the context below.
+If the answer isn't in the context, say "I don't know based on the document."
 
-  response = agent.invoke({"messages":[{"role":"user","content": prompt}]})
+Context:
+{context}
 
+Question: {question}
+""")
 
-  detailed_prompt = response["messages"][-1].content[-1]["text"]
+    def format_docs(docs):
+        return "\n\n".join(doc.page_content for doc in docs)
 
-  # save Prompt using file handling
+    rag_chain = (
+        {"context": retriever | format_docs, "question": RunnablePassthrough()}
+        | prompt
+        | llm
+        | StrOutputParser()
+    )
 
-  with open ("prompt.txt","w") as f:
-    f.write(detailed_prompt)
+    # ==================GET USER INPUT===============
+    user_question = st.text_area("Ask a question about your PDF:")
+    if user_question:
+        if st.button("Get Answer"):
+            with st.spinner("Generating answer..."):
+                st.write_stream(rag_chain.stream(user_question))
 
-  user_detailed = f""" below Given is user detailed genrate
-  resume based on that , if not given below keep: default resume:
-  python developer user detailed: {query}"""
-
-  final_prompt = prompt + detailed_prompt + user_detailed
-
-  #Code genrations
-  response = agent.invoke({"messages":[{"role":"user","content": final_prompt}]})
-
-  code = response["messages"][-1].content[-1]["text"]
-  return code
-
-# code = main_agent(agent,'HARJI MEHTA , GEN AI EXPERT')
-# from IPython import display as DISPLAY
-# DISPLAY.HTML(code)
-
-  # fetch latest domain related jobs using tavily
-def get_jobs(agent,Location = "Delhi", Profile = "Data Entry, Ml in Pyhton"):
-  location ="Delhi"
-  Profile= "Data entry, Ml in Pyhton"
-
-  prompt = f"""based on user given job profile,
-  fetch latest jobs or jobs apply article
-  using naukri, linkdin, indeed or all populer
-  job apply platform, show results with
-  job profiles name, location, salary, company name,
-  show jobs only related to given
-  {location} and {profile}. output must be in
-  professional HTML , naukri themes card with dynamic designs ,
-  show atleast  top 10-20 results with direct apply link """
-
-  response = agent.invoke({"messages":[{"role":"user",
-                                        "content": prompt}]})
-  code = response["messages"][-1].content[-1]["text"]
-
-  return code
-
- # code = get_jobs(agent)
- # DISPLAY.HTML(code)
-
-if st.button ("Genrate Resume"):
-           with st.spinner("Agents running"):
-                      code = main_agent(agent,user_info)
-                      st.html(code, width="stretch",
-                                  unsafe_allow_javascript=True)
-                      st.divider()
-                      jobe_code=get_jobs(agent,location,profile)
-                      st,html(jobe_code, width="stretch",
-                                 unsafe_allow_javascript=True)
-
+elif not GOOGLE_API_KEY:
+    st.warning("Please enter your Google API Key in the sidebar to proceed.")
+elif not uploaded_file:
+    st.info("Please upload a PDF file from the sidebar to start.")
