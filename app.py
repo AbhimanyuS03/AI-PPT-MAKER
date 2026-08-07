@@ -3,7 +3,7 @@ import os
 import time
 import numpy
 from PIL import Image
-from dotenv import load_dotenv
+#from dotenv import load_dotenv
 import streamlit as st
 
 from langchain_community.document_loaders import PyPDFLoader
